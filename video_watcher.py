@@ -138,6 +138,67 @@ def probe_duration(path: Path) -> float:
         return 0.0  # unreachable, keeps type checkers happy
 
 
+def is_url(s: str) -> bool:
+    """True for an http(s) URL, False for any local path (incl. Windows C:\\...)."""
+    from urllib.parse import urlparse
+    u = urlparse(str(s))
+    return u.scheme in ("http", "https") and bool(u.netloc)
+
+
+def download_url(url: str, source_dir: Path) -> Path:
+    """Download a single video to source_dir with yt-dlp and return its path.
+    yt-dlp is an optional dependency, only needed when the input is a URL.
+    Reuses the ffmpeg already on PATH to merge the best video + audio."""
+    if source_dir.exists():
+        shutil.rmtree(source_dir)
+    source_dir.mkdir(parents=True, exist_ok=True)
+    exe = shutil.which("yt-dlp")
+    base = [exe] if exe else [sys.executable, "-m", "yt_dlp"]
+    cmd = base + [
+        "--no-playlist", "-f", "bv*+ba/b", "--merge-output-format", "mp4",
+        "-o", str(source_dir / "%(id)s.%(ext)s"),
+        "--print", "after_move:filepath", "--no-warnings", "--restrict-filenames",
+        url,
+    ]
+    log("setup", f"downloading {url} with yt-dlp")
+    try:
+        proc = run(cmd, capture_stdout=True)
+    except FileNotFoundError:
+        die("yt-dlp is not installed. Run: pip install -U yt-dlp")
+        return source_dir  # unreachable
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or "").strip()
+        if "No module named" in err and "yt_dlp" in err:
+            die("yt-dlp is not installed. Run: pip install -U yt-dlp")
+        die(f"yt-dlp failed to download {url}:\n{err[-1500:]}")
+    # yt-dlp prints the final path; trust it when the file exists.
+    for line in reversed((proc.stdout or "").splitlines()):
+        line = line.strip()
+        if line and Path(line).exists():
+            return Path(line)
+    # Fallback (the printed extension can differ after a remux): take the
+    # largest finished media file in the dedicated, freshly-emptied dir.
+    media = {".mp4", ".mkv", ".webm", ".m4a", ".mov"}
+    files = [p for p in source_dir.iterdir()
+             if p.is_file() and p.suffix.lower() in media
+             and not p.name.endswith((".part", ".ytdl"))]
+    if not files:
+        die(f"yt-dlp produced no media file for {url}.")
+        return source_dir  # unreachable
+    return max(files, key=lambda p: p.stat().st_size)
+
+
+# Rough USD per 1M tokens (input, output) for the dry-run cost estimate only.
+_PRICING = {
+    "claude-haiku-4-5-20251001": (1.0, 5.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-fable-5": (10.0, 50.0),
+}
+
+
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -180,6 +241,8 @@ class Config:
     # behavior
     dry_run: bool = False                # extract + transcribe, skip all API calls
     resume: bool = False                 # reuse completed observations from a prior run
+    social: bool = False                 # also emit creator hook/caption/hashtags
+    source_url: Optional[str] = None     # original URL, if the input was downloaded
 
 
 # ----------------------------------------------------------------------------
@@ -580,6 +643,28 @@ class Synthesizer:
             f"Who this seems to be for and what a viewer is meant to come away with.\n"
         )
 
+        if meta.get("config", {}).get("social"):
+            # Folded into this same reduce call: no extra API request, just more
+            # of the output the creator asked for, grounded in the material above.
+            prompt += (
+                "## Hook options\n"
+                "Three short, scroll-stopping opening lines (max 12 words each) a "
+                "creator could say or caption in the first 2 seconds, grounded in "
+                "the actual content above. No clickbait the video does not deliver.\n"
+                "## Caption\n"
+                "One ready-to-post caption of 1 to 3 sentences in a natural creator "
+                "voice, plus a single clear call to action.\n"
+                "## Hashtags\n"
+                "A single space-separated line of 10 to 15 lowercase hashtags "
+                "relevant to the actual topic, ordered broad to niche. Only tags "
+                "the content supports.\n"
+                "## TL;DR\n"
+                "One sentence a viewer could read to decide whether to watch.\n"
+                "## Repurpose ideas\n"
+                "Three short-form clip ideas, each with the timestamp range to cut, "
+                "drawn from the timeline above.\n"
+            )
+
         try:
             resp = self.client.messages.create(
                 model=self.model,
@@ -753,10 +838,24 @@ class VideoWatcher:
                     f"({cfg.map_model}, {cfg.concurrency} at a time) "
                     f"+ 1 synthesis call ({cfg.reduce_model})")
 
+        # Rough, pre-run cost estimate (images dominate; figures are approximate).
+        est_imgs = min(len(frames), len(windows) * cfg.max_frames_per_window)
+        map_in = est_imgs * 600 + len(windows) * 500
+        map_out = len(windows) * 250
+        red_in = len(windows) * 120 + len(full_transcript) // 4
+        red_out = (5000 if cfg.social else cfg.reduce_max_tokens) // 2
+        mp = _PRICING.get(cfg.map_model, (3.0, 15.0))
+        rd = _PRICING.get(cfg.reduce_model, (3.0, 15.0))
+        est_cost = (map_in * mp[0] + map_out * mp[1]
+                    + red_in * rd[0] + red_out * rd[1]) / 1_000_000
+        log("plan", f"rough cost estimate ~${est_cost:.2f} "
+                    f"(~{est_imgs} images sent; very approximate)")
+
         # --- write what we have so far ------------------------------------
         meta = {
             "video_name": cfg.video.name,
             "video_path": str(cfg.video.resolve()),
+            "source_url": cfg.source_url,
             "analyzed_seconds": round(analyzed, 2),
             "timeline_start": round(start_t, 2),
             "timeline_end": round(end_t, 2),
@@ -846,7 +945,11 @@ class VideoWatcher:
 
         # --- stage 4: synthesize (reduce) ---------------------------------
         log("synthesize", "combining observations into the final understanding")
-        synth = Synthesizer(cfg.reduce_model, cfg.reduce_max_tokens)
+        # The social sections add length; raise the cap (not a charge, output
+        # bills only for tokens generated) so they are not truncated.
+        reduce_tokens = (max(cfg.reduce_max_tokens, 5000)
+                         if cfg.social else cfg.reduce_max_tokens)
+        synth = Synthesizer(cfg.reduce_model, reduce_tokens)
         understanding = synth.synthesize(meta, observations, full_transcript)
         (self.work / "understanding.md").write_text(understanding, encoding="utf-8")
 
@@ -868,9 +971,19 @@ def build_parser() -> argparse.ArgumentParser:
         description="Watch and understand a video with Claude.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("video", type=Path, help="path to the input video file")
+    # Kept as a raw string (not type=Path) so an http(s) URL is not mangled into
+    # a Windows path; it is turned into a Path or downloaded in main().
+    p.add_argument("video",
+                   help="local video file path, or a TikTok/YouTube/Instagram "
+                        "URL to download with yt-dlp")
     p.add_argument("--out", type=Path, default=None,
                    help="output folder (default: ./<video name>_watch)")
+
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--fast", action="store_true",
+                   help="quick, cheap skim preset (tiny whisper, fewer frames)")
+    g.add_argument("--thorough", action="store_true",
+                   help="higher-fidelity preset (finer windows, Sonnet map model)")
 
     p.add_argument("--start", type=float, default=None,
                    help="analyze only from this many seconds in")
@@ -921,15 +1034,46 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--resume", action="store_true",
                    help="reuse completed window observations from a previous run "
                         "and skip re-analyzing (and re-paying for) them")
+    p.add_argument("--social", action="store_true",
+                   help="also emit creator hook, caption, hashtags, TL;DR, and "
+                        "repurpose ideas in understanding.md")
     return p
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = build_parser().parse_args(argv)
 
-    if not args.video.exists():
-        die(f"video not found: {args.video}")
+    # Detect which optional flags the user actually passed (via a SUPPRESS-default
+    # twin parser) so a preset only fills gaps and never overrides an explicit one.
+    sentinel = build_parser()
+    for a in sentinel._actions:
+        if a.dest != "help":
+            a.default = argparse.SUPPRESS
+    supplied = set(vars(sentinel.parse_args(
+        argv if argv is not None else sys.argv[1:])).keys())
+
+    # --fast / --thorough bundle existing, tested flags. --fast sets max_gap=12 so
+    # fps_interval=8 survives the soft-clamp below instead of being lowered to 6.
+    FAST = {"window": 45.0, "fps_interval": 8.0, "max_gap": 12.0,
+            "max_frames": 60, "max_frames_per_window": 6,
+            "whisper_model": "tiny", "concurrency": 8}
+    THOROUGH = {"window": 20.0, "fps_interval": 2.0, "scene_threshold": 0.15,
+                "max_frames": 160, "max_frames_per_window": 10,
+                "whisper_model": "small", "map_model": "claude-sonnet-4-6"}
+    preset = FAST if args.fast else THOROUGH if args.thorough else None
+    if preset:
+        for dest, val in preset.items():
+            if dest not in supplied:
+                setattr(args, dest, val)
+        log("setup", f"preset --{'fast' if args.fast else 'thorough'} applied "
+                     f"(your explicit flags still win)")
+
     check_binaries()
+
+    # The positional may be a local path or an http(s) URL.
+    url_mode = is_url(args.video)
+    if not url_mode and not Path(args.video).exists():
+        die(f"video not found: {args.video}")
 
     # Fail fast on operator errors, before minutes of transcription/extraction.
     if not args.dry_run and not os.environ.get("ANTHROPIC_API_KEY"):
@@ -950,16 +1094,24 @@ def main(argv: Optional[list[str]] = None) -> None:
     if (args.start is not None and args.end is not None
             and args.end <= args.start):
         die(f"--end ({args.end}) must be greater than --start ({args.start})")
-    if args.start is not None:
-        total = probe_duration(args.video)
+    if not url_mode and args.start is not None:
+        total = probe_duration(Path(args.video))
         if args.start >= total:
             die(f"--start ({args.start}s) is at or past the end of the "
                 f"video ({total:.2f}s)")
 
-    out_dir = args.out or (args.video.parent / f"{args.video.stem}_watch")
+    # Resolve the input: download a URL with yt-dlp, or use the local path as-is.
+    source_url = None
+    if url_mode:
+        source_url = args.video
+        out_dir = args.out or Path("video_watch")
+        video_path = download_url(source_url, Path(out_dir) / "source")
+    else:
+        video_path = Path(args.video)
+        out_dir = args.out or (video_path.parent / f"{video_path.stem}_watch")
 
     cfg = Config(
-        video=args.video,
+        video=video_path,
         out_dir=out_dir,
         start=args.start,
         end=args.end,
@@ -983,6 +1135,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         reduce_model=args.reduce_model,
         dry_run=args.dry_run,
         resume=args.resume,
+        social=args.social,
+        source_url=source_url,
     )
 
     # Soft-clamp the frame-spacing knobs so the min_gap thinning pass cannot

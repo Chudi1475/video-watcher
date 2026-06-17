@@ -6,3 +6,7 @@
 
 anthropic>=0.40.0
 faster-whisper>=1.0.0
+
+# Optional: only needed to pass a TikTok/YouTube/Instagram URL instead of a
+# local file. Install with: pip install -U yt-dlp
+# yt-dlp>=2024.1.0

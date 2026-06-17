@@ -76,6 +76,15 @@ python video_watcher.py myvideo.mp4 --window 20 --fps-interval 2 \
 # cheaper and faster: fewer frames, larger windows
 python video_watcher.py myvideo.mp4 --window 45 --fps-interval 8 --max-frames 60
 
+# one-flag presets: --fast (quick skim) or --thorough (higher fidelity)
+python video_watcher.py myvideo.mp4 --fast
+python video_watcher.py myvideo.mp4 --thorough
+# presets only fill in flags you did not set, so your explicit flags always win
+python video_watcher.py myvideo.mp4 --fast --window 10
+
+# creator extras: hook, ready-to-post caption, hashtags, clip ideas (free, same call)
+python video_watcher.py myvideo.mp4 --social
+
 # faster on long videos: run more vision calls at once
 python video_watcher.py myvideo.mp4 --concurrency 8
 
@@ -107,10 +116,56 @@ Run `python video_watcher.py --help` for the full list.
 | `--max-frames-per-window` | cap on frames sent in one vision call | 10 |
 | `--frame-width` | downscale the long edge of each frame | 768 |
 | `--concurrency` | vision (map) calls to run in parallel | 4 |
+| `--fast` | quick, cheap skim preset (tiny whisper, fewer frames) | off |
+| `--thorough` | higher-fidelity preset (finer windows, Sonnet map) | off |
+| `--social` | also emit creator hook, caption, hashtags, clip ideas | off |
 | `--map-model` | model for per window analysis | claude-haiku-4-5-20251001 |
 | `--reduce-model` | model for the final synthesis | claude-sonnet-4-6 |
 | `--dry-run` | extract and transcribe, make no API calls | off |
 | `--resume` | reuse completed observations from a prior run | off |
+
+## Watch a video by URL (TikTok / YouTube / Instagram)
+
+Pass a link instead of a file path and it downloads automatically with
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) (a free, optional dependency), then
+runs the normal pipeline.
+
+```bash
+pip install -U yt-dlp   # one time, only needed for URLs
+
+python video_watcher.py "https://www.tiktok.com/@user/video/123456" --social
+python video_watcher.py "https://youtu.be/VIDEO_ID" --fast
+python video_watcher.py "https://www.instagram.com/reel/CODE/" --social
+```
+
+The video is saved into `./video_watch/source/` and all outputs land in
+`./video_watch/`. Local files work exactly as before; the download step only
+runs when the argument is an `http(s)` URL.
+
+Notes:
+- For private or age-gated videos, yt-dlp can use your browser login:
+  add `--cookies-from-browser chrome` (or `firefox`, `edge`).
+- Instagram public links sometimes need a retry. Sites change often, so run
+  `pip install -U yt-dlp` if one stops working.
+
+## Run it from your phone (Google Colab, free)
+
+No install on the phone. Run everything in a free Google Colab notebook from
+your phone's browser:
+
+1. Push this repo to GitHub (already done if you cloned it from there), and in
+   `video_watcher_colab.ipynb` set your GitHub username in the raw URL in Cell 2.
+2. On your phone, open [colab.research.google.com](https://colab.research.google.com),
+   sign in, then **File > Open notebook > GitHub** and open `video_watcher_colab.ipynb`.
+3. Tap the **key icon** (Secrets) in the left sidebar, add a secret named
+   `ANTHROPIC_API_KEY` with your `sk-ant-...` value, and enable notebook access.
+4. Paste a TikTok / YouTube / Instagram link into the URL field in Cell 3.
+5. **Runtime > Run all.** It installs everything, downloads the video, runs the
+   tool (`--fast --social` by default, good for short clips on Colab's free CPU),
+   and renders `understanding.md` inline.
+
+For a big speed-up, switch the Colab runtime to a **free GPU** (Runtime > Change
+runtime type > T4 GPU) and the notebook will run Whisper on it automatically.
 
 ## Cost and speed
 
