@@ -1,0 +1,8 @@
+# Python dependencies for video_watcher.py
+# System dependency (install separately): ffmpeg + ffprobe
+#   Ubuntu/Debian:  sudo apt install ffmpeg
+#   macOS:          brew install ffmpeg
+#   Windows:        winget install Gyan.FFmpeg   (or choco/scoop install ffmpeg)
+
+anthropic>=0.40.0
+faster-whisper>=1.0.0

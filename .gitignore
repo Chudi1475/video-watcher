@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# tool output (one folder per analyzed video)
+*_watch/
+
+# local scratch
+_smoke/
+_smoke2/
