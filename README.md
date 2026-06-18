@@ -157,8 +157,10 @@ your phone's browser:
    `video_watcher_colab.ipynb` set your GitHub username in the raw URL in Cell 2.
 2. On your phone, open [colab.research.google.com](https://colab.research.google.com),
    sign in, then **File > Open notebook > GitHub** and open `video_watcher_colab.ipynb`.
-3. Tap the **key icon** (Secrets) in the left sidebar, add a secret named
-   `ANTHROPIC_API_KEY` with your `sk-ant-...` value, and enable notebook access.
+3. Add your Anthropic API key: paste your `sk-ant-...` value into the **API_KEY**
+   box in Cell 2 (easiest on a phone), or add it under the key icon (Secrets).
+   Your key is a paid-account password: only ever put it in the notebook box,
+   never in a chat or message.
 4. Paste a TikTok / YouTube / Instagram link into the URL field in Cell 3.
 5. **Runtime > Run all.** It installs everything, downloads the video, runs the
    tool (`--fast --social` by default, good for short clips on Colab's free CPU),
