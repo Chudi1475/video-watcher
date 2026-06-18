@@ -34,7 +34,7 @@ def _load_key() -> str:
         return ""
 
 
-def watch(url, uploaded, effort, social, api_key):
+def watch(url, uploaded, effort, social, audio_only, api_key):
     key = (api_key or "").strip() or _load_key()
     if not key.startswith("sk-ant-"):
         return ("Paste your Anthropic API key (it starts with `sk-ant-`) in the "
@@ -54,6 +54,8 @@ def watch(url, uploaded, effort, social, api_key):
     cmd += {"Fast": ["--fast"], "Thorough": ["--thorough"]}.get(effort, [])
     if social:
         cmd.append("--social")
+    if audio_only:
+        cmd.append("--audio-only")
     env = dict(os.environ, ANTHROPIC_API_KEY=key)
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
@@ -67,26 +69,32 @@ def watch(url, uploaded, effort, social, api_key):
 with gr.Blocks(title="Video Watcher") as demo:
     gr.Markdown(
         "# 🎬 Video Watcher\n"
-        "Paste a TikTok, YouTube, or Instagram link and tap **Watch**. "
-        "You get a plain-language recap, and (with the caption box on) a "
-        "ready-to-post caption and hashtags."
+        "Paste a TikTok, YouTube, or Instagram link (or a podcast / mp3 link) and "
+        "tap **Watch**. You get a plain-language recap, and (with the caption box "
+        "on) a ready-to-post caption and hashtags."
     )
     key_box = gr.Textbox(
         label="Anthropic API key — paste once",
         type="password",
         placeholder="sk-ant-...  (saved only on this device, never shared)",
     )
-    url_box = gr.Textbox(label="Video link", placeholder="https://...")
-    file_box = gr.File(label="…or upload a video file instead", type="filepath")
+    url_box = gr.Textbox(
+        label="Video or audio link",
+        placeholder="https://...  (TikTok, YouTube, Instagram, podcast, mp3)",
+    )
+    file_box = gr.File(label="…or upload a video or audio file instead",
+                       type="filepath")
     with gr.Row():
         effort = gr.Radio(
             ["Fast", "Normal", "Thorough"], value="Fast",
             label="Effort (Fast is cheap and quick; Thorough is the most careful)",
         )
         social = gr.Checkbox(value=True, label="Add caption + hashtags")
+        audio_only = gr.Checkbox(value=False, label="Audio only (skip visuals)")
     go = gr.Button("Watch", variant="primary")
     out_md = gr.Markdown(label="Result")
-    go.click(watch, [url_box, file_box, effort, social, key_box], out_md)
+    go.click(watch, [url_box, file_box, effort, social, audio_only, key_box],
+             out_md)
 
 
 def _primary_ip():

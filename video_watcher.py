@@ -138,6 +138,22 @@ def probe_duration(path: Path) -> float:
         return 0.0  # unreachable, keeps type checkers happy
 
 
+def has_video_stream(path: Path) -> bool:
+    """True if the media has a real video stream (not just an mp3 cover image).
+    Audio-only inputs (podcasts, songs, voice notes) return False."""
+    out = run(
+        ["ffprobe", "-v", "error", "-select_streams", "v",
+         "-show_entries", "stream=codec_type:stream_disposition=attached_pic",
+         "-of", "csv=p=0", str(path)],
+        capture_stdout=True,
+    ).stdout.strip()
+    for line in out.splitlines():
+        parts = line.split(",")
+        if parts and parts[0] == "video" and (len(parts) < 2 or parts[1].strip() != "1"):
+            return True
+    return False
+
+
 def is_url(s: str) -> bool:
     """True for an http(s) URL, False for any local path (incl. Windows C:\\...)."""
     from urllib.parse import urlparse
@@ -243,6 +259,7 @@ class Config:
     resume: bool = False                 # reuse completed observations from a prior run
     social: bool = False                 # also emit creator hook/caption/hashtags
     source_url: Optional[str] = None     # original URL, if the input was downloaded
+    audio_only: bool = False             # skip visuals: transcribe + summarize words
 
 
 # ----------------------------------------------------------------------------
@@ -624,24 +641,45 @@ class Synthesizer:
         obs_block = "\n\n".join(obs_line(o) for o in observations)
         transcript_block = full_transcript.strip() or "(no speech was detected)"
 
-        prompt = (
-            f"Video file: {meta.get('video_name')}\n"
-            f"Approximate length analyzed: {format_ts(meta.get('analyzed_seconds', 0))}\n\n"
-            f"=== TIME-ORDERED OBSERVATIONS OF EACH SEGMENT ===\n{obs_block}\n\n"
-            f"=== FULL TRANSCRIPT ===\n{transcript_block}\n\n"
-            f"Using only the material above, write the understanding of this video "
-            f"in Markdown with these sections:\n"
-            f"## Overview\n"
-            f"A short paragraph capturing what the video is and what it is about.\n"
-            f"## Timeline\n"
-            f"A bulleted, timestamped walk through the main beats.\n"
-            f"## What is shown on screen\n"
-            f"Key visuals, settings, people or objects, and any on-screen text or graphics.\n"
-            f"## What is said\n"
-            f"The main points, claims, or messages from the spoken content.\n"
-            f"## Purpose and takeaway\n"
-            f"Who this seems to be for and what a viewer is meant to come away with.\n"
-        )
+        if observations:
+            prompt = (
+                f"Video file: {meta.get('video_name')}\n"
+                f"Approximate length analyzed: {format_ts(meta.get('analyzed_seconds', 0))}\n\n"
+                f"=== TIME-ORDERED OBSERVATIONS OF EACH SEGMENT ===\n{obs_block}\n\n"
+                f"=== FULL TRANSCRIPT ===\n{transcript_block}\n\n"
+                f"Using only the material above, write the understanding of this video "
+                f"in Markdown with these sections:\n"
+                f"## Overview\n"
+                f"A short paragraph capturing what the video is and what it is about.\n"
+                f"## Timeline\n"
+                f"A bulleted, timestamped walk through the main beats.\n"
+                f"## What is shown on screen\n"
+                f"Key visuals, settings, people or objects, and any on-screen text or graphics.\n"
+                f"## What is said\n"
+                f"The main points, claims, or messages from the spoken content.\n"
+                f"## Purpose and takeaway\n"
+                f"Who this seems to be for and what a viewer is meant to come away with.\n"
+            )
+        else:
+            # Audio-only: no visuals, so summarize purely from what is said.
+            prompt = (
+                f"Audio file: {meta.get('video_name')}\n"
+                f"Approximate length: {format_ts(meta.get('analyzed_seconds', 0))}\n\n"
+                f"=== FULL TRANSCRIPT ===\n{transcript_block}\n\n"
+                f"This is an audio-only recording (a podcast, song, voice note, or "
+                f"similar) with no video. Using only the transcript above, write the "
+                f"understanding in Markdown with these sections:\n"
+                f"## Overview\n"
+                f"A short paragraph capturing what this is and what it is about.\n"
+                f"## Timeline\n"
+                f"A bulleted, timestamped walk through the main beats or topics.\n"
+                f"## Key points\n"
+                f"The main points, claims, or messages from what is said.\n"
+                f"## Notable quotes\n"
+                f"A few short, verbatim lines worth remembering (omit if none stand out).\n"
+                f"## Purpose and takeaway\n"
+                f"Who this seems to be for and what a listener is meant to come away with.\n"
+            )
 
         if meta.get("config", {}).get("social"):
             # Folded into this same reduce call: no extra API request, just more
@@ -677,15 +715,17 @@ class Synthesizer:
             # Do not throw away every paid map call: write a usable deliverable
             # from the observations we already captured.
             log("synthesize", f"synthesis call failed: {e}")
-            return (
+            head = (
                 f"# Understanding (synthesis failed)\n\n"
                 f"The final synthesis call failed: {e}\n\n"
-                f"The per-window observations below were captured successfully "
-                f"and are also saved in observations.json. You can re-run "
-                f"synthesis from them without repeating the vision calls.\n\n"
-                f"## Time-ordered observations\n\n{obs_block}\n\n"
-                f"## Full transcript\n\n{transcript_block}\n"
+                f"The captured material below is also saved in this folder; you can "
+                f"re-run synthesis without repeating any earlier work.\n\n"
             )
+            body = ""
+            if obs_block:
+                body += f"## Time-ordered observations\n\n{obs_block}\n\n"
+            body += f"## Full transcript\n\n{transcript_block}\n"
+            return head + body
 
 
 # ----------------------------------------------------------------------------
@@ -800,7 +840,16 @@ class VideoWatcher:
         source, offset, analyzed = self._prepare_source()
         self.time_offset = offset
         start_t, end_t = offset, offset + analyzed
-        log("setup", f"analyzing {format_ts(analyzed)} of video "
+
+        # Audio-only when forced, or when the input has no video stream (an mp3,
+        # a podcast, a voice note). Then we transcribe and summarize the words
+        # and skip the vision stages entirely.
+        audio_only = cfg.audio_only or not has_video_stream(source)
+        if audio_only and cfg.no_audio:
+            die("Nothing to analyze: this input has no video, and --no-audio "
+                "skips the audio too. Remove --no-audio.")
+        log("setup", f"analyzing {format_ts(analyzed)} of "
+                     f"{'audio' if audio_only else 'video'} "
                      f"(timeline {format_ts(start_t)} to {format_ts(end_t)})")
 
         # --- stage 1: listen ----------------------------------------------
@@ -820,26 +869,33 @@ class VideoWatcher:
             f"[{format_ts(s['start'])}] {s['text']}" for s in segments
         )
 
-        # --- stage 2: see -------------------------------------------------
-        extractor = FrameExtractor(self.frames_dir, cfg.frame_width, cfg.jpeg_q)
-        frames = extractor.extract(source, cfg, analyzed, time_offset=offset)
-        if not frames:
-            die("No frames could be extracted from the video.")
-
-        # --- plan windows -------------------------------------------------
-        windows = self._build_windows(start_t, end_t)
-        if not windows:
-            die("Nothing to analyze: the video has zero usable duration "
-                "(check the file, or your --start/--end range).")
-        total_calls = len(windows)
-        log("plan", f"{len(frames)} frames across {len(windows)} windows "
-                    f"of {cfg.window:g}s")
-        log("plan", f"this will make up to {total_calls} vision calls "
-                    f"({cfg.map_model}, {cfg.concurrency} at a time) "
-                    f"+ 1 synthesis call ({cfg.reduce_model})")
+        # --- stage 2: see (skipped for audio-only) ------------------------
+        frames: list[tuple[float, Path]] = []
+        windows: list[tuple[float, float]] = []
+        if not audio_only:
+            extractor = FrameExtractor(self.frames_dir, cfg.frame_width, cfg.jpeg_q)
+            frames = extractor.extract(source, cfg, analyzed, time_offset=offset)
+            if not frames:
+                die("No frames could be extracted from the video.")
+            windows = self._build_windows(start_t, end_t)
+            if not windows:
+                die("Nothing to analyze: the video has zero usable duration "
+                    "(check the file, or your --start/--end range).")
+            log("plan", f"{len(frames)} frames across {len(windows)} windows "
+                        f"of {cfg.window:g}s")
+            log("plan", f"this will make up to {len(windows)} vision calls "
+                        f"({cfg.map_model}, {cfg.concurrency} at a time) "
+                        f"+ 1 synthesis call ({cfg.reduce_model})")
+        else:
+            if not segments:
+                die("No speech was transcribed from this audio, so there is "
+                    "nothing to summarize.")
+            log("plan", f"audio-only: 1 synthesis call ({cfg.reduce_model}), "
+                        f"no vision calls")
 
         # Rough, pre-run cost estimate (images dominate; figures are approximate).
-        est_imgs = min(len(frames), len(windows) * cfg.max_frames_per_window)
+        est_imgs = (min(len(frames), len(windows) * cfg.max_frames_per_window)
+                    if windows else 0)
         map_in = est_imgs * 600 + len(windows) * 500
         map_out = len(windows) * 250
         red_in = len(windows) * 120 + len(full_transcript) // 4
@@ -848,8 +904,9 @@ class VideoWatcher:
         rd = _PRICING.get(cfg.reduce_model, (3.0, 15.0))
         est_cost = (map_in * mp[0] + map_out * mp[1]
                     + red_in * rd[0] + red_out * rd[1]) / 1_000_000
-        log("plan", f"rough cost estimate ~${est_cost:.2f} "
-                    f"(~{est_imgs} images sent; very approximate)")
+        detail = (f"(~{est_imgs} images sent; very approximate)" if est_imgs
+                  else "(very approximate)")
+        log("plan", f"rough cost estimate ~${est_cost:.2f} {detail}")
 
         # --- write what we have so far ------------------------------------
         meta = {
@@ -861,6 +918,7 @@ class VideoWatcher:
             "timeline_end": round(end_t, 2),
             "n_frames": len(frames),
             "n_windows": len(windows),
+            "audio_only": audio_only,
             "frame_timestamps": [round(t, 2) for (t, _p) in frames],
             "config": {k: (str(v) if isinstance(v, Path) else v)
                        for k, v in asdict(cfg).items()},
@@ -1037,6 +1095,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--social", action="store_true",
                    help="also emit creator hook, caption, hashtags, TL;DR, and "
                         "repurpose ideas in understanding.md")
+    p.add_argument("--audio-only", action="store_true",
+                   help="skip the visuals: transcribe and summarize the words only "
+                        "(works for podcasts, songs, mp3s)")
     return p
 
 
@@ -1137,6 +1198,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         resume=args.resume,
         social=args.social,
         source_url=source_url,
+        audio_only=args.audio_only,
     )
 
     # Soft-clamp the frame-spacing knobs so the min_gap thinning pass cannot
