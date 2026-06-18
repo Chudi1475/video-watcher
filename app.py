@@ -37,8 +37,9 @@ def _load_key() -> str:
 def watch(url, uploaded, effort, social, audio_only, api_key):
     key = (api_key or "").strip() or _load_key()
     if not key.startswith("sk-ant-"):
-        return ("Paste your Anthropic API key (it starts with `sk-ant-`) in the "
-                "key box, then tap Watch. You only do this once on this device.")
+        yield ("Paste your Anthropic API key (it starts with `sk-ant-`) in the "
+               "key box, then tap Watch. You only do this once on this device.")
+        return
     # Remember it on this machine so it does not have to be retyped.
     try:
         KEY_FILE.write_text(key, encoding="utf-8")
@@ -47,7 +48,8 @@ def watch(url, uploaded, effort, social, audio_only, api_key):
 
     source = uploaded or (url or "").strip()
     if not source:
-        return "Paste a video link, or choose a file, first."
+        yield "Paste a video link, or choose a file, first."
+        return
 
     out = HERE / "runs" / uuid.uuid4().hex[:8]
     cmd = [sys.executable, str(SCRIPT), str(source), "--out", str(out)]
@@ -56,14 +58,28 @@ def watch(url, uploaded, effort, social, audio_only, api_key):
         cmd.append("--social")
     if audio_only:
         cmd.append("--audio-only")
-    env = dict(os.environ, ANTHROPIC_API_KEY=key)
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    env = dict(os.environ, ANTHROPIC_API_KEY=key, PYTHONUNBUFFERED="1")
+
+    # Stream the tool's own log lines to the page so it never looks frozen.
+    yield ("Starting… the first run downloads a small speech model, so the very "
+           "first one can take a minute. Progress shows below.")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1, env=env)
+    logs = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line:
+            logs.append(line)
+            yield "Working…\n\n```\n" + "\n".join(logs[-18:]) + "\n```"
+    proc.wait()
 
     result = out / "understanding.md"
     if result.exists():
-        return result.read_text(encoding="utf-8")
-    tail = (proc.stderr or proc.stdout or "no output").strip()[-2500:]
-    return "It did not finish. Here is what it reported:\n\n```\n" + tail + "\n```"
+        yield result.read_text(encoding="utf-8")
+    else:
+        tail = "\n".join(logs[-40:]) or "no output"
+        yield ("It did not finish. Here is what it reported:\n\n```\n"
+               + tail + "\n```")
 
 
 with gr.Blocks(title="Video Watcher") as demo:
