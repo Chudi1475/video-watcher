@@ -89,7 +89,31 @@ with gr.Blocks(title="Video Watcher") as demo:
     go.click(watch, [url_box, file_box, effort, social, key_box], out_md)
 
 
+def _lan_ip():
+    """Best-effort local network IP so a phone on the same Wi-Fi can connect."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return None
+
+
 if __name__ == "__main__":
-    # Locally, share=True prints a temporary public link you can open on a phone.
-    # On Hugging Face Spaces (SPACE_ID is set) the platform handles the URL.
-    demo.launch(share=os.environ.get("SPACE_ID") is None)
+    if os.environ.get("SPACE_ID"):           # running on Hugging Face Spaces
+        demo.launch()
+    else:
+        ip = _lan_ip()
+        print("\n" + "=" * 62)
+        print("  Open Video Watcher here:")
+        print("    On this PC:                 http://127.0.0.1:7860")
+        if ip:
+            print(f"    On your phone (same Wi-Fi): http://{ip}:7860")
+        print("  If Windows pops up a firewall box, click Allow access")
+        print("  so your phone can connect.")
+        print("=" * 62 + "\n")
+        # Bind to the whole network so a phone on the same Wi-Fi can reach it.
+        demo.launch(server_name="0.0.0.0", server_port=7860)
