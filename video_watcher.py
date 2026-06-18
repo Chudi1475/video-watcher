@@ -1104,6 +1104,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> None:
     args = build_parser().parse_args(argv)
 
+    # Sanitize the API key: a stray non-breaking space, zero-width char, or quote
+    # from copy/paste makes the HTTP layer raise UnicodeEncodeError mid-run. A real
+    # key is only letters, digits, '-' and '_', so drop anything else.
+    _raw_key = os.environ.get("ANTHROPIC_API_KEY")
+    if _raw_key:
+        _clean = re.sub(r"[^A-Za-z0-9_\-]", "", _raw_key)
+        if _clean:
+            os.environ["ANTHROPIC_API_KEY"] = _clean
+
     # Detect which optional flags the user actually passed (via a SUPPRESS-default
     # twin parser) so a preset only fills gaps and never overrides an explicit one.
     sentinel = build_parser()

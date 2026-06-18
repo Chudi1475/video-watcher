@@ -25,17 +25,25 @@ SCRIPT = HERE / "video_watcher.py"
 KEY_FILE = HERE / ".vw_key"          # local, gitignored: so you paste the key once
 
 
+def _clean_key(s: str) -> str:
+    """A real key is only letters, digits, '-' and '_'. Strip stray characters
+    (non-breaking spaces, zero-width chars, quotes) that crash the HTTP layer."""
+    import re
+    return re.sub(r"[^A-Za-z0-9_\-]", "", s or "")
+
+
 def _load_key() -> str:
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return os.environ["ANTHROPIC_API_KEY"]
-    try:
-        return KEY_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    raw = os.environ.get("ANTHROPIC_API_KEY") or ""
+    if not raw:
+        try:
+            raw = KEY_FILE.read_text(encoding="utf-8")
+        except OSError:
+            raw = ""
+    return _clean_key(raw)
 
 
 def watch(url, uploaded, effort, social, audio_only, api_key):
-    key = (api_key or "").strip() or _load_key()
+    key = _clean_key(api_key) or _load_key()
     if not key.startswith("sk-ant-"):
         yield ("Paste your Anthropic API key (it starts with `sk-ant-`) in the "
                "key box, then tap Watch. You only do this once on this device.")
