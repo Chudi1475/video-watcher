@@ -7,6 +7,10 @@ env/
 # tool output (one folder per analyzed video)
 *_watch/
 
+# web app: saved API key (local only) and per-run output
+.vw_key
+runs/
+
 # local scratch
 _smoke/
 _smoke2/

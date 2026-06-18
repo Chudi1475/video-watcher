@@ -60,6 +60,25 @@ When it finishes, look in the new folder `myvideo_watch/`:
 - `meta.json`         run parameters and the kept frame timestamps
 - `frames/`           the extracted JPEG frames
 
+## Easiest way: the one-page app (no notebook)
+
+Prefer a plain web page over the command line? Double-click **`run.bat`** (Windows)
+or run `python app.py`. A clean page opens in your browser: paste a link, tap
+**Watch**, read the result. It also prints a public link you can open on your
+phone (keep the window open while you use it).
+
+```bash
+python app.py
+```
+
+- Paste your Anthropic API key once (it is saved locally in `.vw_key`, never shared).
+- Works with a TikTok/YouTube/Instagram link or an uploaded file.
+- Same app can be hosted free on [Hugging Face Spaces](https://huggingface.co/spaces)
+  for a permanent phone link: upload `app.py` and `video_watcher.py`, add a
+  `requirements.txt` with `gradio anthropic faster-whisper yt-dlp`, a
+  `packages.txt` with `ffmpeg`, set `ANTHROPIC_API_KEY` as a Space secret, and
+  **make the Space private** so only you spend your key.
+
 ## Useful options
 
 ```bash
