@@ -66,13 +66,17 @@ def watch(url, uploaded, effort, social, audio_only, api_key):
         cmd.append("--social")
     if audio_only:
         cmd.append("--audio-only")
-    env = dict(os.environ, ANTHROPIC_API_KEY=key, PYTHONUNBUFFERED="1")
+    env = dict(os.environ, ANTHROPIC_API_KEY=key, PYTHONUNBUFFERED="1",
+               PYTHONIOENCODING="utf-8")
 
     # Stream the tool's own log lines to the page so it never looks frozen.
     yield ("Starting… the first run downloads a small speech model, so the very "
            "first one can take a minute. Progress shows below.")
+    # encoding/errors so a non-ASCII log line (emoji in a title, etc.) can never
+    # crash the reader on Windows' default codepage.
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1, env=env)
+                            text=True, encoding="utf-8", errors="replace",
+                            bufsize=1, env=env)
     logs = []
     for line in proc.stdout:
         line = line.rstrip()
