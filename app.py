@@ -89,31 +89,50 @@ with gr.Blocks(title="Video Watcher") as demo:
     go.click(watch, [url_box, file_box, effort, social, key_box], out_md)
 
 
-def _lan_ip():
-    """Best-effort local network IP so a phone on the same Wi-Fi can connect."""
+def _lan_ips():
+    """All this machine's IPv4 addresses, so we can show the right one to type."""
     import socket
+    ips = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except Exception:
+        pass
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
+        ips.add(s.getsockname()[0])
         s.close()
-        return ip
     except Exception:
-        return None
+        pass
+    ips.discard("127.0.0.1")
+    return sorted(ips)
+
+
+def _is_home_lan(ip: str) -> bool:
+    return (ip.startswith("192.168.") or ip.startswith("10.")
+            or any(ip.startswith(f"172.{n}.") for n in range(16, 32)))
 
 
 if __name__ == "__main__":
     if os.environ.get("SPACE_ID"):           # running on Hugging Face Spaces
         demo.launch()
     else:
-        ip = _lan_ip()
+        ips = _lan_ips()
+        home = [ip for ip in ips if _is_home_lan(ip)]
+        tailscale = [ip for ip in ips if ip.startswith("100.")]
         print("\n" + "=" * 62)
-        print("  Open Video Watcher here:")
-        print("    On this PC:                 http://127.0.0.1:7860")
-        if ip:
-            print(f"    On your phone (same Wi-Fi): http://{ip}:7860")
-        print("  If Windows pops up a firewall box, click Allow access")
-        print("  so your phone can connect.")
+        print("  Open Video Watcher:")
+        print("    On this PC:                  http://127.0.0.1:7860")
+        for ip in home:
+            print(f"    On your phone (same Wi-Fi):  http://{ip}:7860")
+        for ip in tailscale:
+            print(f"    Via Tailscale (phone needs Tailscale on too):  "
+                  f"http://{ip}:7860")
+        if not home and not tailscale:
+            for ip in ips:
+                print(f"    Try on your phone:           http://{ip}:7860")
+        print("  If Windows shows a firewall box, click Allow access.")
         print("=" * 62 + "\n")
         # Bind to the whole network so a phone on the same Wi-Fi can reach it.
         demo.launch(server_name="0.0.0.0", server_port=7860)

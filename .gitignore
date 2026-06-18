@@ -7,8 +7,9 @@ env/
 # tool output (one folder per analyzed video)
 *_watch/
 
-# web app: saved API key (local only) and per-run output
+# web app: saved API key (local only), gradio cache, and per-run output
 .vw_key
+.gradio/
 runs/
 
 # local scratch
